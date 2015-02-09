@@ -2,7 +2,6 @@ package fs
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,14 +37,9 @@ func (s *MemoryGroup) Set(d *data) error {
 			}
 		}
 		// By default, MemorySwap is set to twice the size of RAM.
-		// If you want to omit MemorySwap, set it to '-1'.
-		if d.c.MemorySwap == 0 {
+		// If you want to omit MemorySwap, set it to `-1'.
+		if d.c.MemorySwap != -1 {
 			if err := writeFile(dir, "memory.memsw.limit_in_bytes", strconv.FormatInt(d.c.Memory*2, 10)); err != nil {
-				return err
-			}
-		}
-		if d.c.MemorySwap > 0 {
-			if err := writeFile(dir, "memory.memsw.limit_in_bytes", strconv.FormatInt(d.c.MemorySwap, 10)); err != nil {
 				return err
 			}
 		}
@@ -72,25 +66,25 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 	for sc.Scan() {
 		t, v, err := getCgroupParamKeyValue(sc.Text())
 		if err != nil {
-			return fmt.Errorf("failed to parse memory.stat (%q) - %v", sc.Text(), err)
+			return err
 		}
 		stats.MemoryStats.Stats[t] = v
 	}
 
 	// Set memory usage and max historical usage.
-	value, err := getCgroupParamUint(path, "memory.usage_in_bytes")
+	value, err := getCgroupParamInt(path, "memory.usage_in_bytes")
 	if err != nil {
-		return fmt.Errorf("failed to parse memory.usage_in_bytes - %v", err)
+		return err
 	}
 	stats.MemoryStats.Usage = value
-	value, err = getCgroupParamUint(path, "memory.max_usage_in_bytes")
+	value, err = getCgroupParamInt(path, "memory.max_usage_in_bytes")
 	if err != nil {
-		return fmt.Errorf("failed to parse memory.max_usage_in_bytes - %v", err)
+		return err
 	}
 	stats.MemoryStats.MaxUsage = value
-	value, err = getCgroupParamUint(path, "memory.failcnt")
+	value, err = getCgroupParamInt(path, "memory.failcnt")
 	if err != nil {
-		return fmt.Errorf("failed to parse memory.failcnt - %v", err)
+		return err
 	}
 	stats.MemoryStats.Failcnt = value
 

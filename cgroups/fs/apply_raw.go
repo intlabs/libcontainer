@@ -1,11 +1,11 @@
 package fs
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 
 	"github.com/docker/libcontainer/cgroups"
 )
@@ -24,34 +24,6 @@ var (
 	CgroupProcesses = "cgroup.procs"
 )
 
-// The absolute path to the root of the cgroup hierarchies.
-var cgroupRootLock sync.Mutex
-var cgroupRoot string
-
-// Gets the cgroupRoot.
-func getCgroupRoot() (string, error) {
-	cgroupRootLock.Lock()
-	defer cgroupRootLock.Unlock()
-
-	if cgroupRoot != "" {
-		return cgroupRoot, nil
-	}
-
-	// we can pick any subsystem to find the root
-	cpuRoot, err := cgroups.FindCgroupMountpoint("cpu")
-	if err != nil {
-		return "", err
-	}
-	root := filepath.Dir(cpuRoot)
-
-	if _, err := os.Stat(root); err != nil {
-		return "", err
-	}
-
-	cgroupRoot = root
-	return cgroupRoot, nil
-}
-
 type subsystem interface {
 	// Returns the stats, as 'stats', corresponding to the cgroup under 'path'.
 	GetStats(path string, stats *cgroups.Stats) error
@@ -68,57 +40,49 @@ type data struct {
 	pid    int
 }
 
-func Apply(c *cgroups.Cgroup, pid int) (map[string]string, error) {
+func Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
 	d, err := getCgroupData(c, pid)
 	if err != nil {
 		return nil, err
 	}
 
-	paths := make(map[string]string)
-	defer func() {
-		if err != nil {
-			cgroups.RemovePaths(paths)
-		}
-	}()
-	for name, sys := range subsystems {
+	for _, sys := range subsystems {
 		if err := sys.Set(d); err != nil {
+			d.Cleanup()
 			return nil, err
 		}
-		// FIXME: Apply should, ideally, be reentrant or be broken up into a separate
-		// create and join phase so that the cgroup hierarchy for a container can be
-		// created then join consists of writing the process pids to cgroup.procs
-		p, err := d.path(name)
+	}
+
+	return d, nil
+}
+
+func Cleanup(c *cgroups.Cgroup) error {
+	d, err := getCgroupData(c, 0)
+	if err != nil {
+		return fmt.Errorf("Could not get Cgroup data %s", err)
+	}
+	return d.Cleanup()
+}
+
+func GetStats(c *cgroups.Cgroup) (*cgroups.Stats, error) {
+	stats := cgroups.NewStats()
+
+	d, err := getCgroupData(c, 0)
+	if err != nil {
+		return nil, fmt.Errorf("getting CgroupData %s", err)
+	}
+
+	for sysname, sys := range subsystems {
+		path, err := d.path(sysname)
 		if err != nil {
+			// Don't fail if a cgroup hierarchy was not found, just skip this subsystem
 			if cgroups.IsNotFound(err) {
 				continue
 			}
+
 			return nil, err
 		}
-		paths[name] = p
-	}
-	return paths, nil
-}
 
-// Symmetrical public function to update device based cgroups.  Also available
-// in the systemd implementation.
-func ApplyDevices(c *cgroups.Cgroup, pid int) error {
-	d, err := getCgroupData(c, pid)
-	if err != nil {
-		return err
-	}
-
-	devices := subsystems["devices"]
-
-	return devices.Set(d)
-}
-
-func GetStats(systemPaths map[string]string) (*cgroups.Stats, error) {
-	stats := cgroups.NewStats()
-	for name, path := range systemPaths {
-		sys, ok := subsystems[name]
-		if !ok || !cgroups.PathExists(path) {
-			continue
-		}
 		if err := sys.GetStats(path, stats); err != nil {
 			return nil, err
 		}
@@ -135,17 +99,11 @@ func Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
 		return err
 	}
 
-	prevState := c.Freezer
 	c.Freezer = state
 
 	freezer := subsystems["freezer"]
-	err = freezer.Set(d)
-	if err != nil {
-		c.Freezer = prevState
-		return err
-	}
 
-	return nil
+	return freezer.Set(d)
 }
 
 func GetPids(c *cgroups.Cgroup) ([]int, error) {
@@ -163,9 +121,15 @@ func GetPids(c *cgroups.Cgroup) ([]int, error) {
 }
 
 func getCgroupData(c *cgroups.Cgroup, pid int) (*data, error) {
-	root, err := getCgroupRoot()
+	// we can pick any subsystem to find the root
+	cgroupRoot, err := cgroups.FindCgroupMountpoint("cpu")
 	if err != nil {
 		return nil, err
+	}
+	cgroupRoot = filepath.Dir(cgroupRoot)
+
+	if _, err := os.Stat(cgroupRoot); err != nil {
+		return nil, fmt.Errorf("cgroups fs not found")
 	}
 
 	cgroup := c.Name
@@ -174,7 +138,7 @@ func getCgroupData(c *cgroups.Cgroup, pid int) (*data, error) {
 	}
 
 	return &data{
-		root:   root,
+		root:   cgroupRoot,
 		cgroup: cgroup,
 		c:      c,
 		pid:    pid,
@@ -187,6 +151,26 @@ func (raw *data) parent(subsystem string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(raw.root, subsystem, initPath), nil
+}
+
+func (raw *data) Paths() (map[string]string, error) {
+	paths := make(map[string]string)
+
+	for sysname := range subsystems {
+		path, err := raw.path(sysname)
+		if err != nil {
+			// Don't fail if a cgroup hierarchy was not found, just skip this subsystem
+			if cgroups.IsNotFound(err) {
+				continue
+			}
+
+			return nil, err
+		}
+
+		paths[sysname] = path
+	}
+
+	return paths, nil
 }
 
 func (raw *data) path(subsystem string) (string, error) {
@@ -225,6 +209,13 @@ func (raw *data) join(subsystem string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func (raw *data) Cleanup() error {
+	for _, sys := range subsystems {
+		sys.Remove(raw)
+	}
+	return nil
 }
 
 func writeFile(dir, file, data string) error {

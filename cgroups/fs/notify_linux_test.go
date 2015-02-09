@@ -1,48 +1,38 @@
 // +build linux
 
-package libcontainer
+package fs
 
 import (
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func TestNotifyOnOOM(t *testing.T) {
-	memoryPath, err := ioutil.TempDir("", "testnotifyoom-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	oomPath := filepath.Join(memoryPath, "memory.oom_control")
-	eventPath := filepath.Join(memoryPath, "cgroup.event_control")
-	if err := ioutil.WriteFile(oomPath, []byte{}, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := ioutil.WriteFile(eventPath, []byte{}, 0700); err != nil {
-		t.Fatal(err)
-	}
+	helper := NewCgroupTestUtil("memory", t)
+	defer helper.cleanup()
+
+	helper.writeFileContents(map[string]string{
+		"memory.oom_control":   "",
+		"cgroup.event_control": "",
+	})
+
 	var eventFd, oomControlFd int
-	st := &State{
-		CgroupPaths: map[string]string{
-			"memory": memoryPath,
-		},
-	}
-	ooms, err := NotifyOnOOM(st)
+
+	ooms, err := notifyOnOOM(helper.CgroupData)
 	if err != nil {
 		t.Fatal("expected no error, got:", err)
 	}
 
-	data, err := ioutil.ReadFile(eventPath)
+	memoryPath, _ := helper.CgroupData.path("memory")
+	data, err := readFile(memoryPath, "cgroup.event_control")
 	if err != nil {
 		t.Fatal("couldn't read event control file:", err)
 	}
 
-	if _, err := fmt.Sscanf(string(data), "%d %d", &eventFd, &oomControlFd); err != nil {
+	if _, err := fmt.Sscanf(data, "%d %d", &eventFd, &oomControlFd); err != nil {
 		t.Fatalf("invalid control data %q: %s", data, err)
 	}
 
@@ -72,9 +62,7 @@ func TestNotifyOnOOM(t *testing.T) {
 
 	// simulate what happens when a cgroup is destroyed by cleaning up and then
 	// writing to the eventfd.
-	if err := os.RemoveAll(memoryPath); err != nil {
-		t.Fatal(err)
-	}
+	helper.cleanup()
 	if _, err := syscall.Write(efd, buf); err != nil {
 		t.Fatal("unable to write to eventfd:", err)
 	}

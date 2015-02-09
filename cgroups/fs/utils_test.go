@@ -2,10 +2,8 @@ package fs
 
 import (
 	"io/ioutil"
-	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -29,7 +27,7 @@ func TestGetCgroupParamsInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := getCgroupParamUint(tempDir, cgroupFile)
+	value, err := getCgroupParamInt(tempDir, cgroupFile)
 	if err != nil {
 		t.Fatal(err)
 	} else if value != floatValue {
@@ -41,36 +39,11 @@ func TestGetCgroupParamsInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err = getCgroupParamUint(tempDir, cgroupFile)
+	value, err = getCgroupParamInt(tempDir, cgroupFile)
 	if err != nil {
 		t.Fatal(err)
 	} else if value != floatValue {
 		t.Fatalf("Expected %d to equal %f", value, floatValue)
-	}
-
-	// Success with negative values
-	err = ioutil.WriteFile(tempFile, []byte("-12345"), 0755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err = getCgroupParamUint(tempDir, cgroupFile)
-	if err != nil {
-		t.Fatal(err)
-	} else if value != 0 {
-		t.Fatalf("Expected %d to equal %d", value, 0)
-	}
-
-	// Success with negative values lesser than min int64
-	s := strconv.FormatFloat(math.MinInt64, 'f', -1, 64)
-	err = ioutil.WriteFile(tempFile, []byte(s), 0755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err = getCgroupParamUint(tempDir, cgroupFile)
-	if err != nil {
-		t.Fatal(err)
-	} else if value != 0 {
-		t.Fatalf("Expected %d to equal %d", value, 0)
 	}
 
 	// Not a float.
@@ -78,7 +51,7 @@ func TestGetCgroupParamsInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = getCgroupParamUint(tempDir, cgroupFile)
+	_, err = getCgroupParamInt(tempDir, cgroupFile)
 	if err == nil {
 		t.Fatal("Expecting error, got none")
 	}
@@ -88,7 +61,7 @@ func TestGetCgroupParamsInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = getCgroupParamUint(tempDir, cgroupFile)
+	_, err = getCgroupParamInt(tempDir, cgroupFile)
 	if err == nil {
 		t.Fatal("Expecting error, got none")
 	}

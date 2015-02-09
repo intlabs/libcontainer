@@ -10,7 +10,7 @@ import (
 	"github.com/docker/libcontainer/console"
 )
 
-func SetupPtmx(rootfs, consolePath, mountLabel string, hostRootUid, hostRootGid int) error {
+func SetupPtmx(rootfs, consolePath, mountLabel string) error {
 	ptmx := filepath.Join(rootfs, "dev/ptmx")
 	if err := os.Remove(ptmx); err != nil && !os.IsNotExist(err) {
 		return err
@@ -21,7 +21,7 @@ func SetupPtmx(rootfs, consolePath, mountLabel string, hostRootUid, hostRootGid 
 	}
 
 	if consolePath != "" {
-		if err := console.Setup(rootfs, consolePath, mountLabel, hostRootUid, hostRootGid); err != nil {
+		if err := console.Setup(rootfs, consolePath, mountLabel); err != nil {
 			return err
 		}
 	}

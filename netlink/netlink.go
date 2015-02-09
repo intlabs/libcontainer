@@ -11,9 +11,8 @@ import (
 )
 
 var (
-	ErrWrongSockType   = errors.New("Wrong socket type")
-	ErrShortResponse   = errors.New("Got short response from netlink")
-	ErrInterfaceExists = errors.New("Network interface already exists")
+	ErrWrongSockType = errors.New("Wrong socket type")
+	ErrShortResponse = errors.New("Got short response from netlink")
 )
 
 // A Route is a subnet associated with the interface to reach it.

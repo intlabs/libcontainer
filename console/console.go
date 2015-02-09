@@ -13,7 +13,7 @@ import (
 )
 
 // Setup initializes the proper /dev/console inside the rootfs path
-func Setup(rootfs, consolePath, mountLabel string, hostRootUid, hostRootGid int) error {
+func Setup(rootfs, consolePath, mountLabel string) error {
 	oldMask := syscall.Umask(0000)
 	defer syscall.Umask(oldMask)
 
@@ -21,7 +21,7 @@ func Setup(rootfs, consolePath, mountLabel string, hostRootUid, hostRootGid int)
 		return err
 	}
 
-	if err := os.Chown(consolePath, hostRootUid, hostRootGid); err != nil {
+	if err := os.Chown(consolePath, 0, 0); err != nil {
 		return err
 	}
 
@@ -67,14 +67,14 @@ func OpenAndDup(consolePath string) error {
 // Unlockpt unlocks the slave pseudoterminal device corresponding to the master pseudoterminal referred to by f.
 // Unlockpt should be called before opening the slave side of a pseudoterminal.
 func Unlockpt(f *os.File) error {
-	var u int32
+	var u int
 
 	return Ioctl(f.Fd(), syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&u)))
 }
 
 // Ptsname retrieves the name of the first available pts for the given master.
 func Ptsname(f *os.File) (string, error) {
-	var n int32
+	var n int
 
 	if err := Ioctl(f.Fd(), syscall.TIOCGPTN, uintptr(unsafe.Pointer(&n))); err != nil {
 		return "", err

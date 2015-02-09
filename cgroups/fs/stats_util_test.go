@@ -41,26 +41,6 @@ func expectBlkioStatsEquals(t *testing.T, expected, actual cgroups.BlkioStats) {
 		log.Printf("blkio SectorsRecursive do not match - %s\n", err)
 		t.Fail()
 	}
-
-	if err := blkioStatEntryEquals(expected.IoServiceTimeRecursive, actual.IoServiceTimeRecursive); err != nil {
-		log.Printf("blkio IoServiceTimeRecursive do not match - %s\n", err)
-		t.Fail()
-	}
-
-	if err := blkioStatEntryEquals(expected.IoWaitTimeRecursive, actual.IoWaitTimeRecursive); err != nil {
-		log.Printf("blkio IoWaitTimeRecursive do not match - %s\n", err)
-		t.Fail()
-	}
-
-	if err := blkioStatEntryEquals(expected.IoMergedRecursive, actual.IoMergedRecursive); err != nil {
-		log.Printf("blkio IoMergedRecursive do not match - %v vs %v\n", expected.IoMergedRecursive, actual.IoMergedRecursive)
-		t.Fail()
-	}
-
-	if err := blkioStatEntryEquals(expected.IoTimeRecursive, actual.IoTimeRecursive); err != nil {
-		log.Printf("blkio IoTimeRecursive do not match - %s\n", err)
-		t.Fail()
-	}
 }
 
 func expectThrottlingDataEquals(t *testing.T, expected, actual cgroups.ThrottlingData) {
@@ -89,9 +69,5 @@ func expectMemoryStatEquals(t *testing.T, expected, actual cgroups.MemoryStats) 
 			log.Printf("Expected memory stat value %d but found %d\n", expValue, actValue)
 			t.Fail()
 		}
-	}
-	if expected.Failcnt != actual.Failcnt {
-		log.Printf("Expected memory failcnt %d but found %d\n", expected.Failcnt, actual.Failcnt)
-		t.Fail()
 	}
 }

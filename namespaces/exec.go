@@ -3,8 +3,6 @@
 package namespaces
 
 import (
-	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -15,29 +13,28 @@ import (
 	"github.com/docker/libcontainer/cgroups/fs"
 	"github.com/docker/libcontainer/cgroups/systemd"
 	"github.com/docker/libcontainer/network"
+	"github.com/docker/libcontainer/syncpipe"
 	"github.com/docker/libcontainer/system"
-)
-
-const (
-	EXIT_SIGNAL_OFFSET = 128
 )
 
 // TODO(vishh): This is part of the libcontainer API and it does much more than just namespaces related work.
 // Move this to libcontainer package.
 // Exec performs setup outside of a namespace so that a container can be
 // executed.  Exec is a high level function for working with container namespaces.
-func Exec(container *libcontainer.Config, stdin io.Reader, stdout, stderr io.Writer, console, dataPath string, args []string, createCommand CreateCommand, setupCommand SetupCommand, startCallback func()) (int, error) {
-	var err error
+func Exec(container *libcontainer.Config, stdin io.Reader, stdout, stderr io.Writer, console string, rootfs, dataPath string, args []string, createCommand CreateCommand, startCallback func()) (int, error) {
+	var (
+		err error
+	)
 
 	// create a pipe so that we can syncronize with the namespaced process and
-	// pass the state and configuration to the child process
-	parent, child, err := newInitPipe()
+	// pass the veth name to the child
+	syncPipe, err := syncpipe.NewSyncPipe()
 	if err != nil {
 		return -1, err
 	}
-	defer parent.Close()
+	defer syncPipe.Close()
 
-	command := createCommand(container, console, dataPath, os.Args[0], child, args)
+	command := createCommand(container, console, rootfs, dataPath, os.Args[0], syncPipe.Child(), args)
 	// Note: these are only used in non-tty mode
 	// if there is a tty for the container it will be opened within the namespace and the
 	// fds will be duped to stdin, stdiout, and stderr
@@ -46,44 +43,39 @@ func Exec(container *libcontainer.Config, stdin io.Reader, stdout, stderr io.Wri
 	command.Stderr = stderr
 
 	if err := command.Start(); err != nil {
-		child.Close()
 		return -1, err
 	}
-	child.Close()
 
-	wait := func() (*os.ProcessState, error) {
-		ps, err := command.Process.Wait()
-		// we should kill all processes in cgroup when init is died if we use
-		// host PID namespace
-		if !container.Namespaces.Contains(libcontainer.NEWPID) {
-			killAllPids(container)
-		}
-		return ps, err
-	}
-
-	terminate := func(terr error) (int, error) {
-		// TODO: log the errors for kill and wait
-		command.Process.Kill()
-		wait()
-		return -1, terr
-	}
+	// Now we passed the pipe to the child, close our side
+	syncPipe.CloseChild()
 
 	started, err := system.GetProcessStartTime(command.Process.Pid)
 	if err != nil {
-		return terminate(err)
+		return -1, err
 	}
 
 	// Do this before syncing with child so that no children
 	// can escape the cgroup
-	cgroupPaths, err := SetupCgroups(container, command.Process.Pid)
+	cgroupRef, err := SetupCgroups(container, command.Process.Pid)
 	if err != nil {
-		return terminate(err)
+		command.Process.Kill()
+		command.Wait()
+		return -1, err
 	}
-	defer cgroups.RemovePaths(cgroupPaths)
+	defer cgroupRef.Cleanup()
+
+	cgroupPaths, err := cgroupRef.Paths()
+	if err != nil {
+		command.Process.Kill()
+		command.Wait()
+		return -1, err
+	}
 
 	var networkState network.NetworkState
-	if err := InitializeNetworking(container, command.Process.Pid, &networkState); err != nil {
-		return terminate(err)
+	if err := InitializeNetworking(container, command.Process.Pid, syncPipe, &networkState); err != nil {
+		command.Process.Kill()
+		command.Wait()
+		return -1, err
 	}
 
 	state := &libcontainer.State{
@@ -94,159 +86,30 @@ func Exec(container *libcontainer.Config, stdin io.Reader, stdout, stderr io.Wri
 	}
 
 	if err := libcontainer.SaveState(dataPath, state); err != nil {
-		return terminate(err)
+		command.Process.Kill()
+		command.Wait()
+		return -1, err
 	}
 	defer libcontainer.DeleteState(dataPath)
 
-	// Start the setup process to setup the init process
-	if container.Namespaces.Contains(libcontainer.NEWUSER) {
-		setupCmd := setupCommand(container, console, dataPath, os.Args[0])
-		output, err := setupCmd.CombinedOutput()
-		if err != nil || setupCmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus() != 0 {
-			command.Process.Kill()
-			wait()
-			return -1, fmt.Errorf("setup failed: %s %s", err, output)
-		}
-	}
-
-	// send the state to the container's init process then shutdown writes for the parent
-	if err := json.NewEncoder(parent).Encode(networkState); err != nil {
-		return terminate(err)
-	}
-	// shutdown writes for the parent side of the pipe
-	if err := syscall.Shutdown(int(parent.Fd()), syscall.SHUT_WR); err != nil {
-		return terminate(err)
-	}
-
-	// wait for the child process to fully complete and receive an error message
-	// if one was encoutered
-	var ierr *initError
-	if err := json.NewDecoder(parent).Decode(&ierr); err != nil && err != io.EOF {
-		return terminate(err)
-	}
-	if ierr != nil {
-		return terminate(ierr)
+	// Sync with child
+	if err := syncPipe.ReadFromChild(); err != nil {
+		command.Process.Kill()
+		command.Wait()
+		return -1, err
 	}
 
 	if startCallback != nil {
 		startCallback()
 	}
 
-	ps, err := wait()
-	if err != nil {
+	if err := command.Wait(); err != nil {
 		if _, ok := err.(*exec.ExitError); !ok {
 			return -1, err
 		}
 	}
-	// waiting for pipe flushing
-	command.Wait()
 
-	waitStatus := ps.Sys().(syscall.WaitStatus)
-	if waitStatus.Signaled() {
-		return EXIT_SIGNAL_OFFSET + int(waitStatus.Signal()), nil
-	}
-	return waitStatus.ExitStatus(), nil
-}
-
-// killAllPids iterates over all of the container's processes
-// sending a SIGKILL to each process.
-func killAllPids(container *libcontainer.Config) error {
-	var (
-		procs   []*os.Process
-		freeze  = fs.Freeze
-		getPids = fs.GetPids
-	)
-	if systemd.UseSystemd() {
-		freeze = systemd.Freeze
-		getPids = systemd.GetPids
-	}
-	freeze(container.Cgroups, cgroups.Frozen)
-	pids, err := getPids(container.Cgroups)
-	if err != nil {
-		return err
-	}
-	for _, pid := range pids {
-		// TODO: log err without aborting if we are unable to find
-		// a single PID
-		if p, err := os.FindProcess(pid); err == nil {
-			procs = append(procs, p)
-			p.Kill()
-		}
-	}
-	freeze(container.Cgroups, cgroups.Thawed)
-	for _, p := range procs {
-		p.Wait()
-	}
-	return err
-}
-
-// Utility function that gets a host ID for a container ID from user namespace map
-// if that ID is present in the map.
-func hostIDFromMapping(containerID int, uMap []libcontainer.IDMap) (int, bool) {
-	for _, m := range uMap {
-		if (containerID >= m.ContainerID) && (containerID <= (m.ContainerID + m.Size - 1)) {
-			hostID := m.HostID + (containerID - m.ContainerID)
-			return hostID, true
-		}
-	}
-	return -1, false
-}
-
-// Gets the root gid for the process on host which could be non-zero
-// when user namespaces are enabled.
-func GetHostRootGid(container *libcontainer.Config) (int, error) {
-	if container.Namespaces.Contains(libcontainer.NEWUSER) {
-		if container.GidMappings == nil {
-			return -1, fmt.Errorf("User namespaces enabled, but no gid mappings found.")
-		}
-		hostRootGid, found := hostIDFromMapping(0, container.GidMappings)
-		if !found {
-			return -1, fmt.Errorf("User namespaces enabled, but no root user mapping found.")
-		}
-		return hostRootGid, nil
-	}
-
-	// Return default root gid 0
-	return 0, nil
-}
-
-// Gets the root uid for the process on host which could be non-zero
-// when user namespaces are enabled.
-func GetHostRootUid(container *libcontainer.Config) (int, error) {
-	if container.Namespaces.Contains(libcontainer.NEWUSER) {
-		if container.UidMappings == nil {
-			return -1, fmt.Errorf("User namespaces enabled, but no uid mappings found.")
-		}
-		hostRootUid, found := hostIDFromMapping(0, container.UidMappings)
-		if !found {
-			return -1, fmt.Errorf("User namespaces enabled, but no root user mapping found.")
-		}
-		return hostRootUid, nil
-	}
-
-	// Return default root uid 0
-	return 0, nil
-}
-
-// Converts IDMap to SysProcIDMap array and adds it to SysProcAttr.
-func AddUidGidMappings(sys *syscall.SysProcAttr, container *libcontainer.Config) {
-	if container.UidMappings != nil {
-		sys.UidMappings = make([]syscall.SysProcIDMap, len(container.UidMappings))
-		for i, um := range container.UidMappings {
-			sys.UidMappings[i].ContainerID = um.ContainerID
-			sys.UidMappings[i].HostID = um.HostID
-			sys.UidMappings[i].Size = um.Size
-		}
-	}
-
-	if container.GidMappings != nil {
-		sys.GidMappings = make([]syscall.SysProcIDMap, len(container.GidMappings))
-		for i, gm := range container.GidMappings {
-			sys.GidMappings[i].ContainerID = gm.ContainerID
-			sys.GidMappings[i].HostID = gm.HostID
-			sys.GidMappings[i].Size = gm.Size
-		}
-	}
+	return command.ProcessState.Sys().(syscall.WaitStatus).ExitStatus(), nil
 }
 
 // DefaultCreateCommand will return an exec.Cmd with the Cloneflags set to the proper namespaces
@@ -255,10 +118,10 @@ func AddUidGidMappings(sys *syscall.SysProcAttr, container *libcontainer.Config)
 //
 // console: the /dev/console to setup inside the container
 // init: the program executed inside the namespaces
-// dataPath: the path to the directory under which the container's state file is stored
+// root: the path to the container json file and information
 // pipe: sync pipe to synchronize the parent and child processes
 // args: the arguments to pass to the container to run as the user's program
-func DefaultCreateCommand(container *libcontainer.Config, console, dataPath, init string, pipe *os.File, args []string) *exec.Cmd {
+func DefaultCreateCommand(container *libcontainer.Config, console, rootfs, dataPath, init string, pipe *os.File, args []string) *exec.Cmd {
 	// get our binary name from arg0 so we can always reexec ourself
 	env := []string{
 		"console=" + console,
@@ -266,9 +129,19 @@ func DefaultCreateCommand(container *libcontainer.Config, console, dataPath, ini
 		"data_path=" + dataPath,
 	}
 
+	/*
+	   TODO: move user and wd into env
+	   if user != "" {
+	       env = append(env, "user="+user)
+	   }
+	   if workingDir != "" {
+	       env = append(env, "wd="+workingDir)
+	   }
+	*/
+
 	command := exec.Command(init, append([]string{"init", "--"}, args...)...)
 	// make sure the process is executed inside the context of the rootfs
-	command.Dir = container.RootFs
+	command.Dir = rootfs
 	command.Env = append(os.Environ(), env...)
 
 	if command.SysProcAttr == nil {
@@ -279,63 +152,28 @@ func DefaultCreateCommand(container *libcontainer.Config, console, dataPath, ini
 	command.SysProcAttr.Pdeathsig = syscall.SIGKILL
 	command.ExtraFiles = []*os.File{pipe}
 
-	if container.Namespaces.Contains(libcontainer.NEWUSER) {
-		AddUidGidMappings(command.SysProcAttr, container)
-
-		// Default to root user when user namespaces are enabled.
-		if command.SysProcAttr.Credential == nil {
-			command.SysProcAttr.Credential = &syscall.Credential{}
-		}
-	}
-
-	return command
-}
-
-// DefaultSetupCommand will return an exec.Cmd that joins the init process to set it up.
-//
-// console: the /dev/console to setup inside the container
-// dataPath: the path to the directory under which the container's state file is stored
-// init: the program executed inside the namespaces
-func DefaultSetupCommand(container *libcontainer.Config, console, dataPath, init string) *exec.Cmd {
-	env := []string{
-		"console=" + console,
-		"data_path=" + dataPath,
-	}
-
-	if dataPath == "" {
-		dataPath, _ = os.Getwd()
-	}
-
-	if container.RootFs == "" {
-		container.RootFs, _ = os.Getwd()
-	}
-	args := []string{dataPath, container.RootFs, console}
-
-	command := exec.Command(init, append([]string{"exec", "--func", "setup", "--"}, args...)...)
-
-	// make sure the process is executed inside the context of the rootfs
-	command.Dir = container.RootFs
-	command.Env = append(os.Environ(), env...)
-
 	return command
 }
 
 // SetupCgroups applies the cgroup restrictions to the process running in the container based
 // on the container's configuration
-func SetupCgroups(container *libcontainer.Config, nspid int) (map[string]string, error) {
+func SetupCgroups(container *libcontainer.Config, nspid int) (cgroups.ActiveCgroup, error) {
 	if container.Cgroups != nil {
 		c := container.Cgroups
+
 		if systemd.UseSystemd() {
 			return systemd.Apply(c, nspid)
 		}
+
 		return fs.Apply(c, nspid)
 	}
-	return map[string]string{}, nil
+
+	return nil, nil
 }
 
 // InitializeNetworking creates the container's network stack outside of the namespace and moves
 // interfaces into the container's net namespaces if necessary
-func InitializeNetworking(container *libcontainer.Config, nspid int, networkState *network.NetworkState) error {
+func InitializeNetworking(container *libcontainer.Config, nspid int, pipe *syncpipe.SyncPipe, networkState *network.NetworkState) error {
 	for _, config := range container.Networks {
 		strategy, err := network.GetStrategy(config.Type)
 		if err != nil {
@@ -345,5 +183,18 @@ func InitializeNetworking(container *libcontainer.Config, nspid int, networkStat
 			return err
 		}
 	}
-	return nil
+	return pipe.SendToChild(networkState)
+}
+
+// GetNamespaceFlags parses the container's Namespaces options to set the correct
+// flags on clone, unshare, and setns
+func GetNamespaceFlags(namespaces map[string]bool) (flag int) {
+	for key, enabled := range namespaces {
+		if enabled {
+			if ns := GetNamespace(key); ns != nil {
+				flag |= ns.Value
+			}
+		}
+	}
+	return flag
 }

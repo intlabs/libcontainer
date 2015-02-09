@@ -8,6 +8,7 @@ import (
 
 	"github.com/codegangsta/cli"
 	"github.com/docker/libcontainer"
+	"github.com/docker/libcontainer/syncpipe"
 )
 
 // rFunc is a function registration for calling after an execin
@@ -58,13 +59,16 @@ func findUserArgs() []string {
 // loadConfigFromFd loads a container's config from the sync pipe that is provided by
 // fd 3 when running a process
 func loadConfigFromFd() (*libcontainer.Config, error) {
-	pipe := os.NewFile(3, "pipe")
-	defer pipe.Close()
-
-	var config *libcontainer.Config
-	if err := json.NewDecoder(pipe).Decode(&config); err != nil {
+	syncPipe, err := syncpipe.NewSyncPipeFromFd(0, 3)
+	if err != nil {
 		return nil, err
 	}
+
+	var config *libcontainer.Config
+	if err := syncPipe.ReadFromParent(&config); err != nil {
+		return nil, err
+	}
+
 	return config, nil
 }
 

@@ -84,7 +84,7 @@ func startInExistingContainer(config *libcontainer.Config, state *libcontainer.S
 	)
 	signal.Notify(sigc)
 
-	if config.Tty && action != "setup" {
+	if config.Tty {
 		stdin = nil
 		stdout = nil
 		stderr = nil
@@ -135,16 +135,12 @@ func startContainer(container *libcontainer.Config, dataPath string, args []stri
 
 	signal.Notify(sigc)
 
-	createCommand := func(container *libcontainer.Config, console, dataPath, init string, pipe *os.File, args []string) *exec.Cmd {
-		cmd = namespaces.DefaultCreateCommand(container, console, dataPath, init, pipe, args)
+	createCommand := func(container *libcontainer.Config, console, rootfs, dataPath, init string, pipe *os.File, args []string) *exec.Cmd {
+		cmd = namespaces.DefaultCreateCommand(container, console, rootfs, dataPath, init, pipe, args)
 		if logPath != "" {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("log=%s", logPath))
 		}
 		return cmd
-	}
-
-	setupCommand := func(container *libcontainer.Config, console, dataPath, init string) *exec.Cmd {
-		return namespaces.DefaultSetupCommand(container, console, dataPath, init)
 	}
 
 	var (
@@ -193,7 +189,7 @@ func startContainer(container *libcontainer.Config, dataPath string, args []stri
 		}()
 	}
 
-	return namespaces.Exec(container, stdin, stdout, stderr, console, dataPath, args, createCommand, setupCommand, startCallback)
+	return namespaces.Exec(container, stdin, stdout, stderr, console, "", dataPath, args, createCommand, startCallback)
 }
 
 func resizeTty(master *os.File) {

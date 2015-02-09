@@ -32,8 +32,8 @@ func ChangeInterfaceName(old, newName string) error {
 	return netlink.NetworkChangeName(iface, newName)
 }
 
-func CreateVethPair(name1, name2 string, txQueueLen int) error {
-	return netlink.NetworkCreateVethPair(name1, name2, txQueueLen)
+func CreateVethPair(name1, name2 string) error {
+	return netlink.NetworkCreateVethPair(name1, name2)
 }
 
 func SetInterfaceInNamespacePid(name string, nsPid int) error {
@@ -68,14 +68,6 @@ func SetDefaultGateway(ip, ifaceName string) error {
 	return netlink.AddDefaultGw(ip, ifaceName)
 }
 
-func SetInterfaceMac(name string, macaddr string) error {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-	return netlink.NetworkSetMacAddress(iface, macaddr)
-}
-
 func SetInterfaceIp(name string, rawIp string) error {
 	iface, err := net.InterfaceByName(name)
 	if err != nil {
@@ -88,30 +80,10 @@ func SetInterfaceIp(name string, rawIp string) error {
 	return netlink.NetworkLinkAddIp(iface, ip, ipNet)
 }
 
-func DeleteInterfaceIp(name string, rawIp string) error {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-	ip, ipNet, err := net.ParseCIDR(rawIp)
-	if err != nil {
-		return err
-	}
-	return netlink.NetworkLinkDelIp(iface, ip, ipNet)
-}
-
 func SetMtu(name string, mtu int) error {
 	iface, err := net.InterfaceByName(name)
 	if err != nil {
 		return err
 	}
 	return netlink.NetworkSetMTU(iface, mtu)
-}
-
-func SetHairpinMode(name string, enabled bool) error {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-	return netlink.SetHairpinMode(iface, enabled)
 }

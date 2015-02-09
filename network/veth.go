@@ -5,7 +5,6 @@ package network
 import (
 	"fmt"
 
-	"github.com/docker/libcontainer/netlink"
 	"github.com/docker/libcontainer/utils"
 )
 
@@ -19,9 +18,8 @@ const defaultDevice = "eth0"
 
 func (v *Veth) Create(n *Network, nspid int, networkState *NetworkState) error {
 	var (
-		bridge     = n.Bridge
-		prefix     = n.VethPrefix
-		txQueueLen = n.TxQueueLen
+		bridge = n.Bridge
+		prefix = n.VethPrefix
 	)
 	if bridge == "" {
 		return fmt.Errorf("bridge is not specified")
@@ -29,7 +27,7 @@ func (v *Veth) Create(n *Network, nspid int, networkState *NetworkState) error {
 	if prefix == "" {
 		return fmt.Errorf("veth prefix is not specified")
 	}
-	name1, name2, err := createVethPair(prefix, txQueueLen)
+	name1, name2, err := createVethPair(prefix)
 	if err != nil {
 		return err
 	}
@@ -62,20 +60,9 @@ func (v *Veth) Initialize(config *Network, networkState *NetworkState) error {
 	if err := ChangeInterfaceName(vethChild, defaultDevice); err != nil {
 		return fmt.Errorf("change %s to %s %s", vethChild, defaultDevice, err)
 	}
-	if config.MacAddress != "" {
-		if err := SetInterfaceMac(defaultDevice, config.MacAddress); err != nil {
-			return fmt.Errorf("set %s mac %s", defaultDevice, err)
-		}
-	}
 	if err := SetInterfaceIp(defaultDevice, config.Address); err != nil {
 		return fmt.Errorf("set %s ip %s", defaultDevice, err)
 	}
-	if config.IPv6Address != "" {
-		if err := SetInterfaceIp(defaultDevice, config.IPv6Address); err != nil {
-			return fmt.Errorf("set %s ipv6 %s", defaultDevice, err)
-		}
-	}
-
 	if err := SetMtu(defaultDevice, config.Mtu); err != nil {
 		return fmt.Errorf("set %s mtu to %d %s", defaultDevice, config.Mtu, err)
 	}
@@ -87,36 +74,22 @@ func (v *Veth) Initialize(config *Network, networkState *NetworkState) error {
 			return fmt.Errorf("set gateway to %s on device %s failed with %s", config.Gateway, defaultDevice, err)
 		}
 	}
-	if config.IPv6Gateway != "" {
-		if err := SetDefaultGateway(config.IPv6Gateway, defaultDevice); err != nil {
-			return fmt.Errorf("set gateway for ipv6 to %s on device %s failed with %s", config.IPv6Gateway, defaultDevice, err)
-		}
-	}
 	return nil
 }
 
 // createVethPair will automatically generage two random names for
 // the veth pair and ensure that they have been created
-func createVethPair(prefix string, txQueueLen int) (name1 string, name2 string, err error) {
-	for i := 0; i < 10; i++ {
-		if name1, err = utils.GenerateRandomName(prefix, 7); err != nil {
-			return
-		}
-
-		if name2, err = utils.GenerateRandomName(prefix, 7); err != nil {
-			return
-		}
-
-		if err = CreateVethPair(name1, name2, txQueueLen); err != nil {
-			if err == netlink.ErrInterfaceExists {
-				continue
-			}
-
-			return
-		}
-
-		break
+func createVethPair(prefix string) (name1 string, name2 string, err error) {
+	name1, err = utils.GenerateRandomName(prefix, 4)
+	if err != nil {
+		return
 	}
-
+	name2, err = utils.GenerateRandomName(prefix, 4)
+	if err != nil {
+		return
+	}
+	if err = CreateVethPair(name1, name2); err != nil {
+		return
+	}
 	return
 }

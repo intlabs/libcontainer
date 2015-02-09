@@ -1,21 +1,21 @@
 
 all:
-	docker build -t dockercore/libcontainer .
+	docker build -t docker/libcontainer .
 
 test: 
 	# we need NET_ADMIN for the netlink tests and SYS_ADMIN for mounting
-	docker run --rm -it --privileged dockercore/libcontainer
+	docker run --rm -it --cap-add NET_ADMIN --cap-add SYS_ADMIN docker/libcontainer
 
 sh:
-	docker run --rm -it --privileged -w /busybox dockercore/libcontainer nsinit exec sh
+	docker run --rm -it --cap-add NET_ADMIN --cap-add SYS_ADMIN -w /busybox docker/libcontainer nsinit exec sh
 
-GO_PACKAGES = $(shell find . -not \( -wholename ./vendor -prune -o -wholename ./.git -prune \) -name '*.go' -print0 | xargs -0n1 dirname | sort -u)
+GO_PACKAGES = $(shell find . -not \( -wholename ./vendor -prune \) -name '*.go' -print0 | xargs -0n1 dirname | sort -u)
 
 direct-test:
-	go test $(TEST_TAGS) -cover -v $(GO_PACKAGES)
+	go test -cover -v $(GO_PACKAGES)
 
 direct-test-short:
-	go test $(TEST_TAGS) -cover -test.short -v $(GO_PACKAGES)
+	go test -cover -test.short -v $(GO_PACKAGES)
 
 direct-build:
 	go build -v $(GO_PACKAGES)

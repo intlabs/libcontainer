@@ -166,12 +166,6 @@
                 "path": "/dev/random",
                 "type": 99
             }
-        ],
-        "mounts": [
-            {
-                "type": "tmpfs",
-                "destination": "/tmp"
-            }
         ]
     },
     "environment": [
@@ -181,13 +175,13 @@
         "TERM=xterm"
     ],
     "hostname": "koye",
-    "namespaces": [
-        {"type": "NEWIPC"},
-        {"type": "NEWNET"},
-        {"type": "NEWNS"},
-        {"type": "NEWPID"},
-        {"type": "NEWUTS"}
-    ],
+    "namespaces": {
+        "NEWIPC": true,
+        "NEWNET": true,
+        "NEWNS": true,
+        "NEWPID": true,
+        "NEWUTS": true
+    },
     "networks": [
         {
             "address": "127.0.0.1/0",
